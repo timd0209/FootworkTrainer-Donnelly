@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#111111">
+  <title>Happy Feet Footwork</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="#home">HAPPY FEET <span>FOOTWORK</span></a><nav><a href="#train">Train</a><a href="#learn">Learn</a><a href="#progress">Progress</a></nav></header>
+  <main>
+    <section id="home" class="hero">
+      <p class="eyebrow">WRESTLING • SOLO TRAINING</p><h1>QUICK FEET.<br>SHARP REACTIONS.</h1>
+      <p>Structured stance-and-motion rounds with an unpredictable virtual coach.</p>
+      <a class="primary" href="#train">START TRAINING</a>
+      <div class="stats" id="homeStats"><div><strong id="streakValue">0</strong><span>DAY STREAK</span></div><div><strong id="workoutValue">0</strong><span>WORKOUTS</span></div><div><strong id="minutesValue">0</strong><span>MINUTES</span></div></div>
+    </section>
+
+    <section id="train" class="panel">
+      <div id="setupView">
+        <p class="eyebrow">BUILD YOUR SESSION</p><h2>Workout Setup</h2>
+        <div class="preset-row" id="presets">
+          <button data-preset="beginner">Beginner</button><button class="selected" data-preset="intermediate">Intermediate</button><button data-preset="advanced">Advanced</button><button data-preset="custom">Custom</button>
+        </div>
+        <div class="form-grid">
+          <label>Rounds<input id="rounds" type="number" min="1" max="30" value="6"></label>
+          <label>Work (seconds)<input id="workSeconds" type="number" min="10" max="600" value="60"></label>
+          <label>Rest (seconds)<input id="restSeconds" type="number" min="0" max="300" value="30"></label>
+        </div>
+        <button class="primary full" id="startBtn">START WORKOUT</button>
+      </div>
+
+      <div id="workoutView" class="workout hidden" aria-live="polite">
+        <p id="phaseLabel" class="phase">GET READY</p>
+        <p id="roundLabel">ROUND 1 OF 6</p>
+        <div id="timer" class="timer">00:05</div>
+        <div id="command" class="command">GET SET</div>
+        <p id="nextLabel">Next: work</p>
+        <div class="controls"><button id="pauseBtn">PAUSE</button><button id="endBtn">END</button></div>
+      </div>
+
+      <div id="summaryView" class="hidden">
+        <p class="eyebrow">SESSION COMPLETE</p><h2>Nice work.</h2><div id="summaryStats" class="summary"></div>
+        <button class="primary full" id="doneBtn">DONE</button>
+      </div>
+    </section>
+
+    <section id="learn" class="section"><p class="eyebrow">TECHNIQUE LIBRARY</p><h2>Learn the movement.</h2><div id="techniqueGrid" class="cards"></div></section>
+    <section id="progress" class="section"><p class="eyebrow">ACCOUNTABILITY</p><h2>Your Progress</h2><div id="progressGrid" class="cards"></div><h3>Recent workouts</h3><div id="historyList"></div></section>
+  </main>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
