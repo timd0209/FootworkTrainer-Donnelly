@@ -375,6 +375,7 @@ async function routeApi(request, env, auth) {
   }
   if (p.startsWith("/api/auth/")) {
     if (p === "/api/auth/sign-up/email") return json({ error: "Use invite-only registration." }, 404);
+    if (p.startsWith("/api/auth/admin/")) return json({ error: "Use the Happy Feet admin API." }, 404);
     return auth.handler(request);
   }
   return json({ error: "Not found" }, 404);
