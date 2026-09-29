@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Happy Feet Admin</title><link rel="stylesheet" href="/css/styles.css"><link rel="stylesheet" href="/css/accounts.css"></head>
+<body class="account-shell"><header class="topbar"><a class="brand" href="/"><span class="cheetah-mark">🐆</span><span>HAPPY FEET <em>FOOTWORK</em></span></a><nav><a class="nav-link" href="/">Home</a><a class="nav-link" href="/account">Account</a></nav></header>
+<main class="admin-main"><section><p class="eyebrow">ADMIN CONTROL</p><h1>ACCOUNT DASHBOARD</h1><div id="overview" class="admin-stats"></div></section>
+<section class="panel"><div class="section-row"><div><p class="eyebrow">USER MANAGEMENT</p><h2>Accounts</h2></div><button id="toggleCreateUser">+ CREATE USER</button></div>
+<form id="createUserForm" class="admin-form hidden"><input name="username" placeholder="Username" required><input name="email" type="email" placeholder="Email" required><input name="password" type="password" minlength="10" placeholder="Temporary password (10+)" required><button class="primary" type="submit">CREATE</button></form>
+<div class="filters"><input id="userSearch" placeholder="Search username or email"><select id="roleFilter"><option value="">All roles</option><option>user</option><option>admin</option></select><select id="statusFilter"><option value="">All statuses</option><option>active</option><option>disabled</option></select></div>
+<div class="table-wrap"><table><thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th><th>Actions</th></tr></thead><tbody id="usersBody"></tbody></table></div></section>
+<section class="panel"><div class="section-row"><div><p class="eyebrow">INVITE CODES</p><h2>Registration access</h2></div></div>
+<form id="inviteForm" class="inline-form"><label>Optional expiration<input name="expiresAt" type="datetime-local"></label><button class="primary" type="submit">GENERATE CODE</button></form>
+<div id="newInvite" class="invite-secret hidden"></div>
+<div class="table-wrap"><table><thead><tr><th>Status</th><th>Created</th><th>Expires</th><th>Redeemed by</th><th>Action</th></tr></thead><tbody id="invitesBody"></tbody></table></div></section>
+<p id="adminMessage" class="form-message" role="status"></p></main><script type="module" src="/js/admin-page.js"></script></body></html>
