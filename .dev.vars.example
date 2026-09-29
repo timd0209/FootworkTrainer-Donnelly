@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+# Generate a long random value yourself (for example with: npx auth@latest secret).
+BETTER_AUTH_SECRET=REPLACE_WITH_A_LOCAL_SECRET
+BETTER_AUTH_URL=http://localhost:8787
