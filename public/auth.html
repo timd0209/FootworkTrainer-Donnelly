@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b0c0d"><title>Happy Feet Account</title><link rel="stylesheet" href="/css/styles.css"><link rel="stylesheet" href="/css/accounts.css"></head>
+<body class="account-shell"><main class="auth-wrap">
+<a class="brand auth-brand" href="/"><span class="cheetah-mark">🐆</span><span>HAPPY FEET <em>FOOTWORK</em></span></a>
+<section class="panel auth-card">
+<p class="eyebrow">HAPPY FEET ACCOUNT</p>
+<h1 id="authTitle">LOGIN</h1>
+<p class="muted" id="authIntro">Get back to training.</p>
+<div class="auth-tabs"><button id="loginTab">LOGIN</button><button id="signupTab">CREATE ACCOUNT</button></div>
+<form id="loginForm">
+<label>EMAIL OR USERNAME<input name="identity" autocomplete="username" required></label>
+<label>PASSWORD<input name="password" type="password" autocomplete="current-password" required></label>
+<button class="primary full" type="submit">LOGIN</button>
+</form>
+<form id="signupForm" class="hidden">
+<label>USERNAME<input name="username" minlength="3" maxlength="30" pattern="[A-Za-z0-9_.]+" autocomplete="username" required></label>
+<label>EMAIL<input name="email" type="email" autocomplete="email" required></label>
+<label>PASSWORD<input name="password" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label>
+<label>CONFIRM PASSWORD<input name="confirmPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label>
+<label>REGISTRATION CODE<input name="code" autocomplete="off" required></label>
+<p class="form-help">Usernames: 3–30 letters, numbers, underscores, or periods. Passwords: at least 10 characters.</p>
+<button class="primary full" type="submit">CREATE ACCOUNT</button>
+</form>
+<p id="authMessage" class="form-message" role="status"></p>
+<p class="form-help">Password recovery is not enabled yet because no email-delivery provider has been approved.</p>
+</section></main><script type="module" src="/js/auth-page.js"></script></body></html>

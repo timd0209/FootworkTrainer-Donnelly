@@ -1,0 +1,416 @@
+import { betterAuth } from "better-auth";
+import { admin, username } from "better-auth/plugins";
+import { APIError, isAPIError } from "better-auth/api";
+
+const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+const json = (data, status = 200, headers = {}) =>
+  new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...headers } });
+
+function authFor(env, request) {
+  if (!env.DB) throw new Error("D1 binding DB is required.");
+  if (!env.BETTER_AUTH_SECRET) throw new Error("BETTER_AUTH_SECRET is required.");
+  const origin = new URL(request.url).origin;
+  return betterAuth({
+    database: env.DB,
+    secret: env.BETTER_AUTH_SECRET,
+    baseURL: env.BETTER_AUTH_URL || origin,
+    trustedOrigins: [origin],
+    emailAndPassword: {
+      enabled: true,
+      autoSignIn: false,
+      minPasswordLength: 10,
+      maxPasswordLength: 128
+    },
+    session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24 },
+    rateLimit: {
+      enabled: true,
+      storage: "database",
+      window: 60,
+      max: 60,
+      customRules: {
+        "/sign-in/email": { window: 60, max: 8 },
+        "/sign-in/username": { window: 60, max: 8 },
+        "/sign-up/email": { window: 60, max: 5 }
+      }
+    },
+    advanced: {
+      database: { validateSchema: true },
+      useSecureCookies: origin.startsWith("https://"),
+      cookiePrefix: "happy-feet"
+    },
+    user: {
+      additionalFields: {
+        lastLoginAt: { type: "date", required: false, input: false }
+      }
+    },
+    plugins: [
+      username({
+        minUsernameLength: 3,
+        maxUsernameLength: 30,
+        displayUsername: false,
+        usernameValidator: (value) => /^[a-zA-Z0-9_.]+$/.test(value)
+      }),
+      admin({
+        defaultRole: "user",
+        adminRoles: ["admin"],
+        bannedUserMessage: "This account is disabled."
+      })
+    ]
+  });
+}
+
+async function body(request) {
+  const type = request.headers.get("content-type") || "";
+  if (!type.includes("application/json")) throw new APIError("BAD_REQUEST", { message: "JSON required" });
+  return request.json();
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+function normalizeUsername(value) {
+  return String(value || "").trim();
+}
+function validEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+function validUsername(value) {
+  return /^[A-Za-z0-9_.]{3,30}$/.test(value);
+}
+function bytesToBase64Url(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+async function sha256(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+function newInviteSecret() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return "HF-" + bytesToBase64Url(bytes);
+}
+function now() { return Date.now(); }
+
+async function getSession(auth, request) {
+  return auth.api.getSession({ headers: request.headers });
+}
+async function requireUser(auth, request) {
+  const session = await getSession(auth, request);
+  if (!session?.user) throw new APIError("UNAUTHORIZED", { message: "Sign in required" });
+  if (session.user.banned) throw new APIError("FORBIDDEN", { message: "Account disabled" });
+  return session;
+}
+async function requireAdmin(auth, request) {
+  const session = await requireUser(auth, request);
+  if (session.user.role !== "admin") throw new APIError("FORBIDDEN", { message: "Admin access required" });
+  return session;
+}
+async function audit(env, adminId, action, targetType, targetId = null, details = null) {
+  await env.DB.prepare(
+    "INSERT INTO audit_log (id, admin_id, action, target_type, target_id, created_at, details) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).bind(crypto.randomUUID(), adminId, action, targetType, targetId, now(), details ? JSON.stringify(details) : null).run();
+}
+async function activeAdminCount(env) {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM user WHERE role = 'admin' AND banned = 0").first();
+  return Number(row?.n || 0);
+}
+async function targetUser(env, id) {
+  return env.DB.prepare("SELECT id, username, email, role, banned FROM user WHERE id = ?").bind(id).first();
+}
+async function guardFinalAdmin(env, target, action) {
+  if (target?.role === "admin" && !target.banned && ["disable", "demote", "delete"].includes(action)) {
+    if (await activeAdminCount(env) <= 1) {
+      throw new APIError("BAD_REQUEST", { message: "The final active administrator cannot be changed this way." });
+    }
+  }
+}
+
+async function register(request, env, auth) {
+  const data = await body(request);
+  const usernameValue = normalizeUsername(data.username);
+  const email = normalizeEmail(data.email);
+  const password = String(data.password || "");
+  const code = String(data.code || "").trim();
+
+  if (!validUsername(usernameValue)) return json({ error: "Username must be 3-30 characters using letters, numbers, _ or ." }, 400);
+  if (!validEmail(email)) return json({ error: "Enter a valid email address." }, 400);
+  if (password.length < 10 || password.length > 128) return json({ error: "Password must be 10-128 characters." }, 400);
+  if (!code) return json({ error: "A registration code is required." }, 400);
+
+  const hash = await sha256(code);
+  const claimed = await env.DB.prepare(
+    `UPDATE registration_codes
+     SET status = 'redeeming'
+     WHERE code_hash = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)`
+  ).bind(hash, now()).run();
+
+  if (claimed.meta.changes !== 1) return json({ error: "Registration code is invalid, expired, used, or revoked." }, 400);
+
+  try {
+    const created = await auth.api.signUpEmail({
+      headers: request.headers,
+      body: { email, password, name: usernameValue, username: usernameValue }
+    });
+    const userId = created?.user?.id;
+    if (!userId) throw new Error("Account creation did not return a user.");
+    await env.DB.prepare(
+      "UPDATE registration_codes SET status='used', redeemed_at=?, redeemed_by=? WHERE code_hash=? AND status='redeeming'"
+    ).bind(now(), userId, hash).run();
+    return json({ ok: true, message: "Account created. You can now sign in." }, 201);
+  } catch (error) {
+    await env.DB.prepare("UPDATE registration_codes SET status='active' WHERE code_hash=? AND status='redeeming'").bind(hash).run();
+    if (isAPIError(error)) return json({ error: "Unable to create account with those details." }, 400);
+    throw error;
+  }
+}
+
+async function login(request, env, auth) {
+  const data = await body(request);
+  const identity = String(data.identity || "").trim();
+  const password = String(data.password || "");
+  if (!identity || !password) return json({ error: "Invalid email/username or password." }, 400);
+  try {
+    const args = { headers: request.headers, returnHeaders: true };
+    const result = identity.includes("@")
+      ? await auth.api.signInEmail({ ...args, body: { email: normalizeEmail(identity), password } })
+      : await auth.api.signInUsername({ ...args, body: { username: identity, password } });
+    if (result?.response?.user?.id) {
+      await env.DB.prepare("UPDATE user SET lastLoginAt=?, updatedAt=? WHERE id=?")
+        .bind(now(), now(), result.response.user.id).run();
+    }
+    const headers = new Headers(result.headers);
+    headers.set("content-type", "application/json; charset=utf-8");
+    headers.set("cache-control", "no-store");
+    return new Response(JSON.stringify({ ok: true, user: result.response.user }), { status: 200, headers });
+  } catch {
+    return json({ error: "Invalid email/username or password." }, 401);
+  }
+}
+
+async function logout(request, auth) {
+  try {
+    const response = await auth.api.signOut({ headers: request.headers, asResponse: true });
+    return response;
+  } catch {
+    return json({ ok: true });
+  }
+}
+
+async function me(request, auth) {
+  const session = await getSession(auth, request);
+  if (!session?.user || session.user.banned) return json({ user: null });
+  return json({
+    user: {
+      id: session.user.id,
+      username: session.user.username,
+      email: session.user.email,
+      role: session.user.role,
+      status: session.user.banned ? "disabled" : "active",
+      createdAt: session.user.createdAt,
+      lastLoginAt: session.user.lastLoginAt || null
+    }
+  });
+}
+
+async function workouts(request, env, auth) {
+  const session = await requireUser(auth, request);
+  if (request.method === "GET") {
+    const result = await env.DB.prepare(
+      "SELECT id, completed_at, rounds, active_seconds, duration_seconds, commands FROM workouts WHERE user_id=? ORDER BY completed_at DESC LIMIT 100"
+    ).bind(session.user.id).all();
+    return json({ workouts: result.results });
+  }
+  const data = await body(request);
+  const rounds = Number(data.rounds), active = Number(data.activeSeconds), duration = Number(data.durationSeconds), commands = Number(data.commands || 0);
+  const completed = Date.parse(data.completedAt);
+  if (!Number.isInteger(rounds) || rounds < 1 || !Number.isFinite(active) || active < 0 || !Number.isFinite(duration) || duration < 0 || !Number.isFinite(completed)) {
+    return json({ error: "Invalid workout." }, 400);
+  }
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO workouts (id,user_id,completed_at,rounds,active_seconds,duration_seconds,commands,created_at) VALUES (?,?,?,?,?,?,?,?)"
+  ).bind(id, session.user.id, completed, rounds, Math.round(active), Math.round(duration), Math.max(0, Math.round(commands)), now()).run();
+  return json({ ok: true, id }, 201);
+}
+
+async function adminOverview(request, env, auth) {
+  await requireAdmin(auth, request);
+  const [accounts, invites] = await env.DB.batch([
+    env.DB.prepare(`SELECT COUNT(*) total,
+      SUM(CASE WHEN banned=0 THEN 1 ELSE 0 END) active,
+      SUM(CASE WHEN banned=1 THEN 1 ELSE 0 END) disabled,
+      SUM(CASE WHEN role='admin' THEN 1 ELSE 0 END) admins,
+      SUM(CASE WHEN role='user' THEN 1 ELSE 0 END) users,
+      SUM(CASE WHEN createdAt >= ? THEN 1 ELSE 0 END) recent FROM user`).bind(now() - 30 * 86400000),
+    env.DB.prepare(`SELECT
+      SUM(CASE WHEN status='active' AND (expires_at IS NULL OR expires_at>?) THEN 1 ELSE 0 END) active,
+      SUM(CASE WHEN status='used' THEN 1 ELSE 0 END) used,
+      SUM(CASE WHEN status='revoked' OR (status='active' AND expires_at IS NOT NULL AND expires_at<=?) THEN 1 ELSE 0 END) inactive
+      FROM registration_codes`).bind(now(), now())
+  ]);
+  return json({ accounts: accounts.results?.[0] || {}, invites: invites.results?.[0] || {} });
+}
+
+async function adminUsers(request, env, auth) {
+  const adminSession = await requireAdmin(auth, request);
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const role = url.searchParams.get("role");
+    const status = url.searchParams.get("status");
+    let sql = "SELECT id,username,email,role,banned,createdAt,lastLoginAt FROM user WHERE 1=1";
+    const binds = [];
+    if (q) { sql += " AND (LOWER(username) LIKE ? OR LOWER(email) LIKE ?)"; binds.push("%"+q+"%", "%"+q+"%"); }
+    if (role === "user" || role === "admin") { sql += " AND role=?"; binds.push(role); }
+    if (status === "active") sql += " AND banned=0";
+    if (status === "disabled") sql += " AND banned=1";
+    sql += " ORDER BY createdAt DESC LIMIT 200";
+    const result = await env.DB.prepare(sql).bind(...binds).all();
+    return json({ users: result.results.map(u => ({ ...u, status: u.banned ? "disabled" : "active" })) });
+  }
+
+  const data = await body(request);
+  const usernameValue = normalizeUsername(data.username), email = normalizeEmail(data.email), password = String(data.password || "");
+  if (!validUsername(usernameValue) || !validEmail(email) || password.length < 10) return json({ error: "Valid username, email, and 10+ character password required." }, 400);
+  try {
+    const created = await auth.api.signUpEmail({ headers: request.headers, body: { email, password, name: usernameValue, username: usernameValue } });
+    await audit(env, adminSession.user.id, "user.created", "user", created.user.id);
+    return json({ ok: true, user: created.user }, 201);
+  } catch {
+    return json({ error: "Unable to create user." }, 400);
+  }
+}
+
+async function adminUserAction(request, env, auth, userId) {
+  const adminSession = await requireAdmin(auth, request);
+  const data = await body(request);
+  const action = String(data.action || "");
+  const target = await targetUser(env, userId);
+  if (!target) return json({ error: "User not found." }, 404);
+  await guardFinalAdmin(env, target, action);
+
+  if (action === "disable") {
+    await auth.api.banUser({ headers: request.headers, body: { userId, banReason: "Disabled by administrator" } });
+  } else if (action === "reactivate") {
+    await auth.api.unbanUser({ headers: request.headers, body: { userId } });
+  } else if (action === "promote") {
+    await auth.api.setRole({ headers: request.headers, body: { userId, role: "admin" } });
+  } else if (action === "demote") {
+    await auth.api.setRole({ headers: request.headers, body: { userId, role: "user" } });
+  } else if (action === "revoke-sessions") {
+    await env.DB.prepare("DELETE FROM session WHERE userId=?").bind(userId).run();
+  } else if (action === "delete") {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM workouts WHERE user_id=?").bind(userId),
+      env.DB.prepare("DELETE FROM session WHERE userId=?").bind(userId),
+      env.DB.prepare("DELETE FROM account WHERE userId=?").bind(userId),
+      env.DB.prepare("UPDATE registration_codes SET redeemed_by=NULL WHERE redeemed_by=?").bind(userId),
+      env.DB.prepare("DELETE FROM user WHERE id=?").bind(userId)
+    ]);
+  } else if (action === "update") {
+    const usernameValue = normalizeUsername(data.username), email = normalizeEmail(data.email);
+    if (!validUsername(usernameValue) || !validEmail(email)) return json({ error: "Invalid username or email." }, 400);
+    await env.DB.prepare("UPDATE user SET username=?, name=?, email=?, updatedAt=? WHERE id=?")
+      .bind(usernameValue.toLowerCase(), usernameValue, email, now(), userId).run();
+  } else {
+    return json({ error: "Unknown action." }, 400);
+  }
+
+  await audit(env, adminSession.user.id, "user."+action, "user", userId);
+  return json({ ok: true });
+}
+
+async function adminInvites(request, env, auth) {
+  const adminSession = await requireAdmin(auth, request);
+  if (request.method === "GET") {
+    const result = await env.DB.prepare(`SELECT r.id,r.created_at,r.expires_at,r.status,r.redeemed_at,
+      u.username AS redeemed_username
+      FROM registration_codes r LEFT JOIN user u ON u.id=r.redeemed_by
+      ORDER BY r.created_at DESC LIMIT 200`).all();
+    const current = now();
+    return json({ invites: result.results.map(r => ({
+      ...r,
+      status: r.status === "active" && r.expires_at && r.expires_at <= current ? "expired" : r.status
+    })) });
+  }
+  const data = await body(request);
+  const expiresAt = data.expiresAt ? Date.parse(data.expiresAt) : null;
+  if (data.expiresAt && !Number.isFinite(expiresAt)) return json({ error: "Invalid expiration date." }, 400);
+  const secret = newInviteSecret();
+  const hash = await sha256(secret);
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO registration_codes (id,code_hash,created_at,expires_at,status,created_by) VALUES (?,?,?,?, 'active', ?)"
+  ).bind(id, hash, now(), expiresAt, adminSession.user.id).run();
+  await audit(env, adminSession.user.id, "invite.generated", "invite", id, { expiresAt });
+  return json({ ok: true, id, code: secret }, 201);
+}
+
+async function revokeInvite(request, env, auth, inviteId) {
+  const adminSession = await requireAdmin(auth, request);
+  const result = await env.DB.prepare(
+    "UPDATE registration_codes SET status='revoked' WHERE id=? AND status='active'"
+  ).bind(inviteId).run();
+  if (result.meta.changes !== 1) return json({ error: "Only active unused invites can be revoked." }, 409);
+  await audit(env, adminSession.user.id, "invite.revoked", "invite", inviteId);
+  return json({ ok: true });
+}
+
+async function routeApi(request, env, auth) {
+  const url = new URL(request.url);
+  const p = url.pathname;
+  if (p === "/api/register" && request.method === "POST") return register(request, env, auth);
+  if (p === "/api/login" && request.method === "POST") return login(request, env, auth);
+  if (p === "/api/logout" && request.method === "POST") return logout(request, auth);
+  if (p === "/api/me" && request.method === "GET") return me(request, auth);
+  if (p === "/api/workouts" && ["GET","POST"].includes(request.method)) return workouts(request, env, auth);
+  if (p === "/api/admin/overview" && request.method === "GET") return adminOverview(request, env, auth);
+  if (p === "/api/admin/users" && ["GET","POST"].includes(request.method)) return adminUsers(request, env, auth);
+  if (p.startsWith("/api/admin/users/") && request.method === "POST") return adminUserAction(request, env, auth, decodeURIComponent(p.split("/").pop()));
+  if (p === "/api/admin/invites" && ["GET","POST"].includes(request.method)) return adminInvites(request, env, auth);
+  if (p.startsWith("/api/admin/invites/") && p.endsWith("/revoke") && request.method === "POST") {
+    return revokeInvite(request, env, auth, decodeURIComponent(p.split("/")[4]));
+  }
+  if (p.startsWith("/api/auth/")) {
+    if (p === "/api/auth/sign-up/email") return json({ error: "Use invite-only registration." }, 404);
+    if (p.startsWith("/api/auth/admin/")) return json({ error: "Use the Happy Feet admin API." }, 404);
+    return auth.handler(request);
+  }
+  return json({ error: "Not found" }, 404);
+}
+
+async function page(request, env, file) {
+  const url = new URL(request.url);
+  url.pathname = file;
+  return env.ASSETS.fetch(new Request(url, request));
+}
+
+export default {
+  async fetch(request, env) {
+    try {
+      const url = new URL(request.url);
+      const auth = authFor(env, request);
+      if (url.pathname.startsWith("/api/")) return await routeApi(request, env, auth);
+      if (url.pathname === "/login") return page(request, env, "/auth.html");
+      if (url.pathname === "/signup") return page(request, env, "/auth.html");
+      if (url.pathname === "/account") {
+        const session = await getSession(auth, request);
+        if (!session?.user || session.user.banned) return Response.redirect(url.origin + "/login?next=/account", 302);
+        return page(request, env, "/account.html");
+      }
+      if (url.pathname === "/admin") {
+        const session = await getSession(auth, request);
+        if (!session?.user) return Response.redirect(url.origin + "/login?next=/admin", 302);
+        if (session.user.role !== "admin" || session.user.banned) return new Response("Forbidden", { status: 403 });
+        return page(request, env, "/admin.html");
+      }
+      return env.ASSETS.fetch(request);
+    } catch (error) {
+      if (isAPIError(error)) return json({ error: error.message || "Request failed." }, error.statusCode || 400);
+      console.error("request_failed", error instanceof Error ? error.message : "unknown");
+      return json({ error: "Server error." }, 500);
+    }
+  }
+};
