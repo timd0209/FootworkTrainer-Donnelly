@@ -384,7 +384,11 @@ async function routeApi(request, env, auth) {
 async function page(request, env, file) {
   const url = new URL(request.url);
   url.pathname = file;
-  return env.ASSETS.fetch(new Request(url, request));
+  url.search = "";
+  return env.ASSETS.fetch(new Request(url.toString(), {
+    method: "GET",
+    headers: request.headers,
+  }));
 }
 
 export default {
