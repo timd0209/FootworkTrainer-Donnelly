@@ -53,10 +53,11 @@ function primeSpeech(){
   if(!("speechSynthesis" in window)||!("SpeechSynthesisUtterance" in window))return false;
   try{
     const synth=window.speechSynthesis;
-    synth.cancel();
-    const u=new SpeechSynthesisUtterance(" ");
+    if(synth.paused)synth.resume();
+    const u=new SpeechSynthesisUtterance("ready");
     const voice=chooseVoice();
     if(voice)u.voice=voice;
+    u.lang=voice?.lang||"en-US";
     u.volume=.01;
     u.rate=1;
     synth.speak(u);
@@ -66,8 +67,10 @@ function primeSpeech(){
 }
 
 export async function unlockAudio(){
-  const contextReady=await resumeAudioContext();
+  // Prime speech immediately while the Start button click still counts as a user gesture.
+  // This is important on iOS/Safari and some mobile Chrome versions.
   const speechReady=primeSpeech();
+  const contextReady=await resumeAudioContext();
   if(contextReady){
     const ctx=getAudioContext();
     try{
@@ -92,13 +95,10 @@ export function workBeep(){tone(1040,.16,.55,"square");tone(1320,.18,.5,"square"
 export function restBeep(){tone(620,.18,.55,"square");tone(440,.24,.5,"square",.2)}
 export function completeBeep(){tone(880,.13,.5,"sine");tone(1100,.13,.5,"sine",.15);tone(1320,.24,.5,"sine",.3)}
 
-export function speak(text){
-  if(!("speechSynthesis" in window)||!("SpeechSynthesisUtterance" in window))return false;
-  const synth=window.speechSynthesis;
-  const generation=++speechGeneration;
+function queueSpeech(text,generation){
+  if(generation!==speechGeneration)return false;
   try{
-    if(synth.paused)synth.resume();
-    synth.cancel();
+    const synth=window.speechSynthesis;
     const u=new SpeechSynthesisUtterance(text);
     const voice=chooseVoice();
     if(voice)u.voice=voice;
@@ -108,22 +108,23 @@ export function speak(text){
     u.volume=1;
     u.onerror=()=>{
       if(generation!==speechGeneration)return;
-      setTimeout(()=>{
-        if(generation!==speechGeneration)return;
-        try{
-          const retry=new SpeechSynthesisUtterance(text);
-          const retryVoice=chooseVoice();
-          if(retryVoice)retry.voice=retryVoice;
-          retry.lang=retryVoice?.lang||"en-US";
-          retry.rate=1.15;
-          retry.pitch=.85;
-          retry.volume=1;
-          synth.speak(retry);
-        }catch{}
-      },80);
+      setTimeout(()=>queueSpeech(text,generation),120);
     };
     synth.speak(u);
     speechUnlocked=true;
+    return true;
+  }catch{return false}
+}
+
+export function speak(text){
+  if(!("speechSynthesis" in window)||!("SpeechSynthesisUtterance" in window))return false;
+  const synth=window.speechSynthesis;
+  const generation=++speechGeneration;
+  try{
+    if(synth.paused)synth.resume();
+    synth.cancel();
+    // Safari can discard speech queued in the same tick as cancel().
+    setTimeout(()=>queueSpeech(text,generation),60);
     return true;
   }catch{return false}
 }
