@@ -1,4 +1,4 @@
-export const COMMANDS=["Shot","Sprawl","Downblock","Circle","Fast feet","Level change","Reset"];
+export const COMMANDS=["Shot","Sprawl","Downblock","Circle left","Circle right","Fast feet","Level change","Reset","Snap down","Fake"];
 export const PRESETS={
  beginner:{rounds:4,work:45,rest:30,minDelay:5,maxDelay:8},
  intermediate:{rounds:6,work:60,rest:30,minDelay:3,maxDelay:6},
