@@ -2,7 +2,7 @@ let audioContext=null;
 let selectedVoice=null;
 let speechUnlocked=false;
 let speechGeneration=0;
-let activeCommandAudio=null;
+let activeCommandSource=null;
 
 const COMMAND_AUDIO={
   "shot":"/audio/commands/shot.mp3",
@@ -16,7 +16,8 @@ const COMMAND_AUDIO={
   "snap down":"/audio/commands/snapdown.mp3",
   "fake":"/audio/commands/fake.mp3"
 };
-const commandAudioCache=new Map();
+const commandBufferCache=new Map();
+let preloadPromise=null;
 
 function getAudioContext(){
   const Ctx=window.AudioContext||window.webkitAudioContext;
@@ -29,10 +30,8 @@ function tone(frequency,duration=.14,volume=.5,type="sine",delay=0){
   const ctx=getAudioContext();
   if(!ctx||ctx.state!=="running")return;
   const oscillator=ctx.createOscillator(),gain=ctx.createGain(),start=ctx.currentTime+delay;
-  oscillator.type=type;
-  oscillator.frequency.setValueAtTime(frequency,start);
-  gain.gain.setValueAtTime(volume,start);
-  gain.gain.exponentialRampToValueAtTime(.001,start+duration);
+  oscillator.type=type;oscillator.frequency.setValueAtTime(frequency,start);
+  gain.gain.setValueAtTime(volume,start);gain.gain.exponentialRampToValueAtTime(.001,start+duration);
   oscillator.connect(gain);gain.connect(ctx.destination);oscillator.start(start);oscillator.stop(start+duration);
 }
 
@@ -55,22 +54,31 @@ function primeSpeech(){
   try{const synth=window.speechSynthesis;if(synth.paused)synth.resume();const u=new SpeechSynthesisUtterance("ready"),voice=chooseVoice();if(voice)u.voice=voice;u.lang=voice?.lang||"en-US";u.volume=.01;synth.speak(u);speechUnlocked=true;return true}catch{return false}
 }
 
+async function loadCommandBuffer(command,src){
+  if(commandBufferCache.has(command))return commandBufferCache.get(command);
+  const ctx=getAudioContext();if(!ctx)throw new Error("Web Audio unavailable");
+  const response=await fetch(src,{cache:"force-cache"});
+  if(!response.ok)throw new Error("Audio fetch failed: "+response.status);
+  const bytes=await response.arrayBuffer();
+  const buffer=await ctx.decodeAudioData(bytes.slice(0));
+  commandBufferCache.set(command,buffer);return buffer;
+}
+
 function preloadCommandAudio(){
-  Object.entries(COMMAND_AUDIO).forEach(([command,src])=>{
-    if(commandAudioCache.has(command))return;
-    const audio=new Audio();audio.preload="auto";audio.src=src;audio.load();commandAudioCache.set(command,audio);
-  });
+  if(preloadPromise)return preloadPromise;
+  preloadPromise=Promise.allSettled(Object.entries(COMMAND_AUDIO).map(([command,src])=>loadCommandBuffer(command,src)));
+  return preloadPromise;
 }
 
 export async function unlockAudio(){
-  preloadCommandAudio();
-  // Play/pause a command recording during the user's Start click to unlock HTML audio on iOS/Safari.
-  const first=commandAudioCache.values().next().value;
-  if(first){try{first.muted=true;first.currentTime=0;const p=first.play();if(p?.then)await p;first.pause();first.currentTime=0;first.muted=false}catch{first.muted=false}}
-  const speechReady=primeSpeech();
   const contextReady=await resumeAudioContext();
-  if(contextReady){const ctx=getAudioContext();try{const buffer=ctx.createBuffer(1,1,22050),source=ctx.createBufferSource();source.buffer=buffer;source.connect(ctx.destination);source.start(0)}catch{}}
-  return contextReady||speechReady||!!first;
+  if(contextReady){
+    const ctx=getAudioContext();
+    try{const buffer=ctx.createBuffer(1,1,22050),source=ctx.createBufferSource();source.buffer=buffer;source.connect(ctx.destination);source.start(0)}catch{}
+    preloadCommandAudio();
+  }
+  const speechReady=primeSpeech();
+  return contextReady||speechReady;
 }
 
 export async function ensureAudioReady(){
@@ -92,26 +100,22 @@ function speechFallback(text){
   const generation=++speechGeneration;try{const synth=window.speechSynthesis;if(synth.paused)synth.resume();synth.cancel();setTimeout(()=>queueSpeech(text,generation),60);return true}catch{return false}
 }
 
-export function speak(text){
-  const key=String(text||"").trim().toLowerCase();
-  const src=COMMAND_AUDIO[key];
+export async function speak(text){
+  const key=String(text||"").trim().toLowerCase(),src=COMMAND_AUDIO[key];
   if(!src)return speechFallback(text);
   try{
-    speechGeneration++;
-    if("speechSynthesis" in window)window.speechSynthesis.cancel();
-    if(activeCommandAudio){activeCommandAudio.pause();activeCommandAudio.currentTime=0}
-    const cached=commandAudioCache.get(key);
-    const audio=cached||new Audio(src);
-    commandAudioCache.set(key,audio);activeCommandAudio=audio;audio.currentTime=0;audio.volume=1;
-    const played=audio.play();
-    if(played?.catch)played.catch(()=>speechFallback(text));
-    return true;
+    speechGeneration++;if("speechSynthesis" in window)window.speechSynthesis.cancel();
+    const ctx=getAudioContext();if(!ctx)throw new Error("Web Audio unavailable");
+    if(ctx.state!=="running")await ctx.resume();
+    const buffer=commandBufferCache.get(key)||await loadCommandBuffer(key,src);
+    if(activeCommandSource){try{activeCommandSource.stop()}catch{}activeCommandSource=null}
+    const source=ctx.createBufferSource();source.buffer=buffer;source.connect(ctx.destination);source.onended=()=>{if(activeCommandSource===source)activeCommandSource=null};activeCommandSource=source;source.start(0);return true;
   }catch{return speechFallback(text)}
 }
 
 export function cancelSpeech(){
   speechGeneration++;
-  if(activeCommandAudio){try{activeCommandAudio.pause();activeCommandAudio.currentTime=0}catch{}activeCommandAudio=null}
+  if(activeCommandSource){try{activeCommandSource.stop()}catch{}activeCommandSource=null}
   if("speechSynthesis" in window){try{window.speechSynthesis.cancel()}catch{}}
 }
 
